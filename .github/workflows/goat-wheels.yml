@@ -1,0 +1,57 @@
+# Builds manby's Linux wheels for GOAT from the goat branch (upstream manby plus
+# plan4better's patches). A tag v*-goat.* makes a GitHub release of this fork with
+# the wheels, which GOAT pins by URL. Upstream's release.yml publishes to PyPI and
+# crates.io and is not used here.
+name: GOAT wheels
+
+on:
+  push:
+    tags: ['v*-goat.*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-gnu
+            # jemalloc for pages up to 64 kB, as upstream builds it
+            docker: -e JEMALLOC_SYS_WITH_LG_PAGE=16
+    steps:
+      - uses: actions/checkout@v7
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: '2_28'
+          docker-options: -e LIBZ_SYS_STATIC=1 ${{ matrix.docker }}
+          rust-toolchain: 1.98.1
+          maturin-version: v1.16.0
+          args: --release --locked --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-${{ matrix.target }}
+          path: dist/*.whl
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.whl --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
+            --notes "manby ${GITHUB_REF_NAME%-goat.*} for GOAT: upstream with plan4better's patches, branch goat."

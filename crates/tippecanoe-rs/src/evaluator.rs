@@ -672,8 +672,24 @@ impl Area {
                     (0..ring.len())
                         .any(|i| self.touches_segment(ring[i], ring[(i + 1) % ring.len()]))
                 });
-                // or the area lies wholly inside the polygon
-                crossing || inside_rings(&parts, self.rings[0][0])
+                // or a part of the area lies wholly inside the polygon. With no
+                // edges crossing, each of the area's rings is wholly inside it or
+                // wholly outside, so one vertex of each ring tells; only those
+                // within the polygon's bounding box can be inside.
+                let (mut lo, mut hi) = ((i64::MAX, i64::MAX), (i64::MIN, i64::MIN));
+                for &p in parts.iter().flatten() {
+                    lo = (lo.0.min(p.0), lo.1.min(p.1));
+                    hi = (hi.0.max(p.0), hi.1.max(p.1));
+                }
+                crossing
+                    || self.rings.iter().any(|ring| {
+                        let p = ring[0];
+                        lo.0 <= p.0
+                            && p.0 <= hi.0
+                            && lo.1 <= p.1
+                            && p.1 <= hi.1
+                            && inside_rings(&parts, p)
+                    })
             }
             _ => false,
         }
@@ -1150,6 +1166,47 @@ mod tests {
         assert!(!check(2.0, 2.0)); // in the hole
         assert!(check(10.5, 10.5)); // in the second polygon
         assert!(!check(5.0, 5.0));
+    }
+
+    #[test]
+    fn intersects_a_polygon_around_any_part_of_a_multipolygon() {
+        // the same two parts: a square with a hole, and a small square apart
+        let tree = parse_filter(
+            r#"{"*": ["intersects", {"type": "MultiPolygon", "coordinates": [
+                [[[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]], [[1, 1], [3, 1], [3, 3], [1, 3], [1, 1]]],
+                [[[10, 10], [11, 10], [11, 11], [10, 11], [10, 10]]]]}]}"#,
+        );
+        // a square polygon from (lo, lo) to (hi, hi), its edges touching no part
+        let check = |lo: f64, hi: f64| {
+            let corners = [(lo, lo), (hi, lo), (hi, hi), (lo, hi), (lo, lo)];
+            let draws: Vec<Draw> = corners
+                .iter()
+                .enumerate()
+                .map(|(i, &(lon, lat))| {
+                    let p = lonlat2tile(lon, lat, 32);
+                    Draw::new(if i == 0 { VT_MOVETO } else { VT_LINETO }, p.0, p.1)
+                })
+                .collect();
+            let geom = FilterGeometry {
+                draws: &draws,
+                origin: (0, 0),
+                type_: VT_POLYGON,
+            };
+            let getter = |_: &str| no_such_key();
+            evaluate_getter(
+                &getter,
+                "l",
+                tree.root(),
+                &mut BTreeSet::new(),
+                &[],
+                Some(&geom),
+            )
+        };
+        assert!(check(9.0, 12.0)); // around the second part only
+        assert!(check(-1.0, 5.0)); // around the first part only
+        assert!(check(-1.0, 12.0)); // around both
+        assert!(!check(1.5, 2.5)); // in the hole of the first part
+        assert!(!check(6.0, 8.0)); // between the parts
     }
 
     #[test]

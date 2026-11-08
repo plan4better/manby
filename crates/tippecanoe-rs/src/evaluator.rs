@@ -415,7 +415,8 @@ fn value_text(v: &MvtValue) -> Option<String> {
     }
 }
 
-/// SQL LIKE: % matches any run of characters, _ any one character.
+/// SQL LIKE: % matches any run of characters, _ any one character. Only the
+/// pattern has wildcards: a % or _ in the text is a plain character.
 fn like(text: &str, pattern: &str) -> bool {
     let t: Vec<char> = text.chars().collect();
     let p: Vec<char> = pattern.chars().collect();
@@ -423,11 +424,12 @@ fn like(text: &str, pattern: &str) -> bool {
     // where the last % was, and the text position it is matched up to
     let mut star: Option<(usize, usize)> = None;
     while ti < t.len() {
-        if pi < p.len() && (p[pi] == '_' || p[pi] == t[ti]) {
-            ti += 1;
-            pi += 1;
-        } else if pi < p.len() && p[pi] == '%' {
+        // % first, so that a % in the text cannot match it as a plain character
+        if pi < p.len() && p[pi] == '%' {
             star = Some((pi, ti));
+            pi += 1;
+        } else if pi < p.len() && (p[pi] == '_' || p[pi] == t[ti]) {
+            ti += 1;
             pi += 1;
         } else if let Some((sp, st)) = star {
             pi = sp + 1;
@@ -932,6 +934,34 @@ mod tests {
         assert!(like("Straße", "%ß%"));
     }
 
+    // % and _ are wildcards only in the pattern; in the text they are plain
+    // characters. Expected values are DuckDB's LIKE without ESCAPE, which also
+    // takes a backslash as a plain character.
+    #[test]
+    fn like_text_with_wildcard_characters_matches_sql() {
+        assert!(like("a%b", "a%"));
+        assert!(like("x%y%z", "x%z"));
+        assert!(like("x%y%z", "%y%"));
+        assert!(like("50%x", "50%"));
+        assert!(like(r"50%[x](y)\z", "50%"));
+        assert!(like("Rate 50%", "%50%"));
+        assert!(like("a_b", "a_%"));
+        assert!(like(r"50%[x](y)\z", r"%\z"));
+        assert!(like(r"50%[x](y)\z", "%[x](y)%"));
+        assert!(like(r"a\b", r"a\%"));
+        assert!(!like("a%", r"a\%"));
+        assert!(like(r"a\bc", r"a\_c"));
+        assert!(!like("abc", r"a\_c"));
+        assert!(!like("a_c", r"a\_c"));
+        assert!(like("[", "["));
+        assert!(like("(", "("));
+        assert!(!like("a", "."));
+        assert!(like("a", "_"));
+        assert!(like("%", "%%"));
+        assert!(!like("x%y", "x%z"));
+        assert!(like(&"Ärger".to_lowercase(), &"ä%".to_lowercase()));
+    }
+
     #[test]
     fn like_filters() {
         let mut attrs = HashMap::new();
@@ -940,7 +970,14 @@ mod tests {
             stringified_to_mvt_value(MVT_STRING, "Lidl Berlin"),
         );
         attrs.insert("n".to_string(), stringified_to_mvt_value(MVT_DOUBLE, "105"));
+        attrs.insert(
+            "rate".to_string(),
+            stringified_to_mvt_value(MVT_STRING, "A%b"),
+        );
         let cases: &[(&str, bool)] = &[
+            (r#"{"*": ["ilike", "rate", "a%"]}"#, true),
+            (r#"{"*": ["!ilike", "rate", "a%"]}"#, false),
+            (r#"{"*": ["like", "rate", "a%"]}"#, false),
             (r#"{"*": ["like", "name", "Lidl%"]}"#, true),
             (r#"{"*": ["like", "name", "lidl%"]}"#, false),
             (r#"{"*": ["ilike", "name", "lidl%"]}"#, true),

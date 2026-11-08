@@ -108,6 +108,7 @@ pub fn prefilter_tile(
             unclipped_features: rt.unclipped_features,
             // tippecanoe's prefilter writer reads with a state of its own
             minzoom_feature_pending: false,
+            minzoom_feature_pending_beyond_next: false,
             children: Vec::new(),
             skip_unless_dropping: rt.skip_unless_dropping,
             complexity: rt.complexity,

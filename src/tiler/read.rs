@@ -452,6 +452,8 @@ pub struct ReadTile {
     pub original_features: i64,
     pub unclipped_features: i64,
     pub minzoom_feature_pending: bool,
+    /// A pending feature appears only beyond the next zoom.
+    pub minzoom_feature_pending_beyond_next: bool,
     /// The inputs of the tiles at the next zoom written, in tile order.
     pub children: Vec<TileInput>,
     pub skip_unless_dropping: bool,
@@ -678,6 +680,7 @@ struct ChunkOut {
     original_features: i64,
     unclipped_features: i64,
     minzoom_feature_pending: bool,
+    minzoom_feature_pending_beyond_next: bool,
 }
 
 /// Reads one tile. `complexity` is the `-at` estimate if an earlier read
@@ -736,6 +739,7 @@ pub fn read_tile(
         original_features: 0,
         unclipped_features: 0,
         minzoom_feature_pending: false,
+        minzoom_feature_pending_beyond_next: false,
         children: Vec::new(),
         skip_unless_dropping: input.skip_unless_dropping,
         complexity,
@@ -753,6 +757,7 @@ pub fn read_tile(
         out.original_features = c.original_features;
         out.unclipped_features = c.unclipped_features;
         out.minzoom_feature_pending = c.minzoom_feature_pending;
+        out.minzoom_feature_pending_beyond_next = c.minzoom_feature_pending_beyond_next;
         out.children = c
             .children
             .into_iter()
@@ -786,6 +791,7 @@ pub fn read_tile(
             out.original_features += c.original_features;
             out.unclipped_features += c.unclipped_features;
             out.minzoom_feature_pending |= c.minzoom_feature_pending;
+            out.minzoom_feature_pending_beyond_next |= c.minzoom_feature_pending_beyond_next;
 
             for p in c.children {
                 let pos = children.binary_search_by(|t| (t.x, t.y).cmp(&(p.x, p.y)));
@@ -1027,6 +1033,7 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
         original_features: 0,
         unclipped_features: 0,
         minzoom_feature_pending: false,
+        minzoom_feature_pending_beyond_next: false,
     };
 
     // room for every feature and vertex, so that nothing grows by copying
@@ -1163,6 +1170,9 @@ fn read_chunk(ctx: &Ctx<'_>, input: &TileInput, source: Source<'_>, rp: &ReadPar
             // a leaf at z carries only z-visible content, so an excluded feature at
             // any deeper minzoom (even z + 1) must block leafing here
             out.minzoom_feature_pending = true;
+            if f.tippecanoe_minzoom as i32 > rp.nextzoom {
+                out.minzoom_feature_pending_beyond_next = true;
+            }
             continue;
         }
         if f.tippecanoe_maxzoom != -1 && z > f.tippecanoe_maxzoom as i32 {

@@ -1360,6 +1360,9 @@ struct NextFeatureState {
     // set when a feature excluded by tippecanoe_minzoom first appears beyond the next
     // zoom, so variable-depth pyramids don't leaf above the feature's minzoom and prune it away
     minzoom_feature_pending: bool,
+    // set when such a feature appears only beyond the next zoom: then the children
+    // cannot leaf either, while one that appears at the next zoom lets them try
+    minzoom_feature_pending_beyond_next: bool,
 }
 
 /// Prints the tiling progress, as next_feature() and write_tile() both do.
@@ -1534,6 +1537,9 @@ fn next_feature(
             // a leaf at z carries only z-visible content, so an excluded feature at
             // any deeper minzoom (even z + 1) must block leafing here
             next_feature_state.minzoom_feature_pending = true;
+            if sf.tippecanoe_minzoom > a.nextzoom {
+                next_feature_state.minzoom_feature_pending_beyond_next = true;
+            }
             continue;
         }
         if sf.tippecanoe_maxzoom != -1 && z > sf.tippecanoe_maxzoom {
@@ -3027,7 +3033,7 @@ fn write_tile(
                 let mut estimated_complexity_out =
                     geompos[j].load(Ordering::Relaxed) - start_geompos[j];
 
-                if dropping_by_rate || next_feature_state.minzoom_feature_pending {
+                if dropping_by_rate || next_feature_state.minzoom_feature_pending_beyond_next {
                     // large enough to make it not try to stop early
                     estimated_complexity_out = 1i64 << 32;
                 }

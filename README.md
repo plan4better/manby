@@ -1,6 +1,12 @@
 # manby
 
-manby builds vector tilesets from GeoJSON, FlatGeobuf, CSV, Geobuf, GeoParquet or Arrow features, and from DuckDB queries and data frames in Python and R. It makes the same tiles as [tippecanoe](https://github.com/felt/tippecanoe), in less memory, ten to eighteen times faster on a Mac and eight to fifteen times faster on Linux, more where tippecanoe's disk slows it down. `manby join` is tippecanoe's tile-join, two to thirty-five times faster.
+[![crates.io](https://img.shields.io/crates/v/manby)](https://crates.io/crates/manby)
+[![PyPI](https://img.shields.io/pypi/v/manby)](https://pypi.org/project/manby/)
+[![R-universe](https://birkskyum.r-universe.dev/manby/badges/version)](https://birkskyum.r-universe.dev/manby)
+[![Homebrew](https://img.shields.io/badge/homebrew-birkskyum%2Ftap-orange)](https://github.com/birkskyum/homebrew-tap)
+[![release](https://img.shields.io/github/v/release/birkskyum/manby)](https://github.com/birkskyum/manby/releases)
+
+manby builds vector tilesets from GeoJSON, FlatGeobuf, CSV, Geobuf, GeoParquet or Arrow features, GeoParquet in object storage, and from DuckDB queries and data frames in Python and R. It makes the same tiles as [tippecanoe](https://github.com/felt/tippecanoe), in less memory, ten to eighteen times faster on a Mac and eight to fifteen times faster on Linux, more where tippecanoe's disk slows it down. `manby join` is tippecanoe's tile-join, two to thirty-five times faster.
 
 The `manby` command takes tippecanoe's options:
 
@@ -8,7 +14,25 @@ The `manby` command takes tippecanoe's options:
 manby -zg --drop-densest-as-needed -o places.pmtiles places.geojson
 ```
 
-`pip install manby` installs it on macOS and Linux, with a Python module, and `uvx manby` runs it without installing. `brew install birkskyum/tap/manby` and `mise use -g github:birkskyum/manby` install the program alone from the [releases](https://github.com/birkskyum/manby/releases). `cargo install manby` builds it, with Rust 1.89 or later. The [site](https://birkskyum.github.io/manby/) has the guides.
+The [site](https://birkskyum.github.io/manby/) has the guides.
+
+## Install
+
+manby runs on macOS and Linux, and on Windows in WSL.
+
+| | |
+| --- | --- |
+| Homebrew | `brew install birkskyum/tap/manby` |
+| pip, with the Python module | `pip install manby` |
+| uv, without installing | `uvx manby` |
+| mise | `mise use -g github:birkskyum/manby` |
+| cargo, with Rust 1.89 or later | `cargo install manby` |
+| R, from [R-universe](https://birkskyum.r-universe.dev/manby) | `install.packages("manby", repos = c("https://birkskyum.r-universe.dev", "https://cloud.r-project.org"))` |
+| The program alone | the [releases](https://github.com/birkskyum/manby/releases), for macOS and Linux on arm64 and x86-64 |
+
+cargo builds it without MapLibre Tiles and URLs, which `--features mlt,remote` adds, with Rust 1.98.
+
+## From Python and R
 
 From Python, a DuckDB query streams to manby in Arrow batches.
 
@@ -19,7 +43,7 @@ places = duckdb.sql("SELECT name, geometry FROM 'places.parquet' WHERE country =
 manby.tile(places, "places.pmtiles", maximum_zoom="g", drop_densest_as_needed=True)
 ```
 
-The R package, from [R-universe](https://birkskyum.r-universe.dev/manby), tiles sf data frames and DuckDB tables the same way. `manby serve` serves tilesets with a map of them, from the command line, R or Python.
+The R package tiles sf data frames and DuckDB tables the same way. `manby serve` serves tilesets with a map of them, and `manby stats` reports their tiles' sizes, from the command line, R or Python.
 
 ```r
 manby::tile(sf::st_read("places.gpkg"), "places.pmtiles", maximum_zoom = "g", drop_densest_as_needed = TRUE)

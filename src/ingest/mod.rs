@@ -23,7 +23,9 @@ pub mod csv;
 pub mod flatgeobuf;
 pub mod geobuf;
 pub mod geojson;
+pub mod h3;
 pub mod json;
+pub mod remote;
 pub mod serialize;
 pub mod serialized;
 
@@ -479,13 +481,14 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
 
     for (l, s) in sources.iter_mut().enumerate() {
         if s.layer.is_empty() {
-            let file =
-                if arrow::is_parquet(&s.format, &s.file) || arrow::is_arrow(&s.format, &s.file) {
-                    arrow::without_extension(&s.file)
-                } else {
-                    &s.file
-                };
-            s.layer = layer_name_for(file, &fname, l);
+            let file = if remote::is_remote(&s.file) {
+                remote::stem(&s.file)
+            } else if arrow::is_parquet(&s.format, &s.file) || arrow::is_arrow(&s.format, &s.file) {
+                arrow::without_extension(&s.file).to_string()
+            } else {
+                s.file.clone()
+            };
+            s.layer = layer_name_for(&file, &fname, l);
             if !options.quiet {
                 stderr.extend_from_slice(
                     format!("For layer {}, using name \"{}\"\n", l, s.layer).as_bytes(),
@@ -527,6 +530,45 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
         };
         let layer = layer_source[&src.layer];
 
+        let bbox = options.bbox.map(arrow::WorldBox::new);
+        if remote::is_remote(&src.file) {
+            let opened = remote::open_parquet(&src.file, &cfg, bbox.as_ref());
+            let (schema, batches, kept) = match opened {
+                Ok(o) => o,
+                Err(e) => {
+                    flush(&mut stderr);
+                    return Err(e);
+                }
+            };
+            let table = match arrow::Table::new(&schema, &reading_name, &cfg) {
+                Ok(t) => t,
+                Err(e) => {
+                    flush(&mut stderr);
+                    return Err(e);
+                }
+            };
+            report_kept(&mut stderr, options, &reading_name, kept);
+            let layername = sources[layer].layer.clone();
+            let reading = ArrowReading {
+                cfg: &cfg,
+                table: &table,
+                reading_name: &reading_name,
+                layername: &layername,
+                layer_names: &layer_names,
+                bbox,
+            };
+            read_arrow(
+                &mut parts,
+                batches,
+                &reading,
+                cpus,
+                &mut overall_offset,
+                &mut once,
+                &mut stderr,
+            )?;
+            continue;
+        }
+
         let (file, map) = match open_source(src) {
             Ok(fm) => fm,
             Err(e) => {
@@ -543,9 +585,7 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
         if parquet || arrow::is_arrow(format, name) {
             drop(map);
             let opened = match (file, parquet) {
-                (Some(f), true) => arrow::open_parquet(f, &reading_name, |schema| {
-                    arrow::Table::columns_of(schema, &reading_name, &cfg)
-                }),
+                (Some(f), true) => arrow::open_parquet(f, &reading_name, &cfg, bbox.as_ref()),
                 (None, true) => Err(Error::new(
                     EXIT_OPEN,
                     format!(
@@ -556,10 +596,12 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
                 (Some(f), false) => match f.metadata() {
                     Ok(m) if m.is_file() => arrow::open_ipc(f, true, &reading_name),
                     _ => arrow::open_ipc_stream(f, &reading_name),
-                },
-                (None, false) => arrow::open_ipc_stream(std::io::stdin(), &reading_name),
+                }
+                .map(|(s, b)| (s, b, None)),
+                (None, false) => arrow::open_ipc_stream(std::io::stdin(), &reading_name)
+                    .map(|(s, b)| (s, b, None)),
             };
-            let (schema, batches) = match opened {
+            let (schema, batches, kept) = match opened {
                 Ok(o) => o,
                 Err(e) => {
                     flush(&mut stderr);
@@ -573,6 +615,7 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
                     return Err(e);
                 }
             };
+            report_kept(&mut stderr, options, &reading_name, kept);
             let layername = sources[layer].layer.clone();
             let reading = ArrowReading {
                 cfg: &cfg,
@@ -580,6 +623,7 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
                 reading_name: &reading_name,
                 layername: &layername,
                 layer_names: &layer_names,
+                bbox,
             };
             read_arrow(
                 &mut parts,
@@ -816,7 +860,68 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
     }
     flush(&mut stderr);
 
+    if let Some(setup) = &cfg.h3 {
+        add_hexagons(
+            &mut parts,
+            &cfg,
+            setup,
+            &layer_names,
+            unit_count,
+            overall_offset,
+        );
+    }
+
     Ok(merge(parts, &sources, &layer_names, &layer_source, options))
+}
+
+/// `--h3`: the hexagons of the points that the chunks counted, as one more
+/// chunk, after every input's features.
+fn add_hexagons(
+    parts: &mut Parts,
+    cfg: &Config<'_>,
+    setup: &h3::Setup,
+    layer_names: &[String],
+    unit: usize,
+    seq: i64,
+) {
+    let bins: Vec<h3::Bins> = parts
+        .chunks
+        .iter_mut()
+        .filter_map(|a| a.chunk.h3.take().map(|b| *b))
+        .collect();
+    let hexagons = h3::hexagons(setup, bins);
+    if hexagons.is_empty() {
+        return;
+    }
+    let mut chunk = Chunk::new(layer_names);
+    for mut h in hexagons {
+        serialize::serialize_feature(&mut chunk, cfg, &mut h.feature, &h.layer);
+    }
+    // the guess of a maximum zoom goes by the features read
+    chunk.dist_terms = Buf::new();
+    chunk.area_terms = Buf::new();
+    chunk.dist_count = 0;
+    chunk.finish();
+    if !cfg.o.quiet {
+        let windows: Vec<String> = setup
+            .windows
+            .iter()
+            .map(|w| format!("{} at z{}-{}", w.0, w.1, w.2))
+            .collect();
+        eprintln!(
+            "{} hexagons at H3 resolutions {}, and the points from z{}",
+            chunk.features.len(),
+            windows.join(", "),
+            setup.base
+        );
+    }
+    parts.seq_base.push(seq);
+    parts.segment.push(0);
+    parts.chunks.push(Accepted {
+        chunk,
+        unit,
+        line_offset: 0,
+    });
 }
 
 /// Rows of an Arrow table or FlatGeobuf file read at a time, in whole
@@ -1124,10 +1229,29 @@ struct ArrowReading<'a> {
     reading_name: &'a str,
     layername: &'a str,
     layer_names: &'a [String],
+    /// `--bbox`: only the rows that overlap it.
+    bbox: Option<arrow::WorldBox>,
+}
+
+/// With `--bbox`, how many row groups a GeoParquet reader kept.
+fn report_kept(stderr: &mut Vec<u8>, options: &Options, name: &str, kept: arrow::Kept) {
+    if let Some((kept, all)) = kept
+        && !options.quiet
+    {
+        stderr.extend_from_slice(
+            format!(
+                "{}: reading {} of {} row groups, which may overlap --bbox\n",
+                name, kept, all
+            )
+            .as_bytes(),
+        );
+    }
 }
 
 /// Reads an Arrow table, numbering its rows as tippecanoe numbers the
-/// features of the FlatGeobuf file that GDAL would make of it.
+/// features of the FlatGeobuf file that GDAL would make of it. With `--bbox`
+/// only the rows that overlap it are read, and numbered, so the tiles are
+/// those of the table of those rows.
 fn read_arrow(
     parts: &mut Parts,
     batches: arrow::Batches,
@@ -1161,6 +1285,22 @@ fn read_arrow(
     loop {
         let done = match batches.next() {
             Some(Ok(b)) => {
+                let b = match &r.bbox {
+                    Some(bbox) => match arrow::filter_batch(r.table, &b, bbox) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            flush(stderr);
+                            return Err(Error::new(
+                                EXIT_READ,
+                                format!("{}: {}", r.reading_name, e),
+                            ));
+                        }
+                    },
+                    None => b,
+                };
+                if b.num_rows() == 0 {
+                    continue;
+                }
                 rows += b.num_rows();
                 bytes += b.get_array_memory_size();
                 pending.push(b);

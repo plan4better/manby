@@ -113,7 +113,7 @@ pub fn parse(
         let lon = tippecanoe::cstd::atof(&line[loncol]);
         let lat = tippecanoe::cstd::atof(&line[latcol]);
 
-        let (x, y) = (cfg.project)(lon, lat, 32);
+        let (x, y) = cfg.project.world(lon, lat, 32);
         let dv: DrawVec = vec![Draw::new(VT_MOVETO, x, y)];
 
         let mut full_keys: Vec<Cow<'_, str>> = Vec::new();

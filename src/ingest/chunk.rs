@@ -375,6 +375,8 @@ pub struct Chunk {
     /// Whether the error was found at the very end of the chunk, where the
     /// next chunk's first byte might have changed it.
     pub error_at_end: bool,
+    /// `--h3`: the points counted into hexagons.
+    pub h3: Option<Box<super::h3::Bins>>,
 }
 
 impl Chunk {

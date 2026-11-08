@@ -9,6 +9,7 @@
 pub mod buf;
 pub mod clean;
 pub mod compress;
+pub mod crs;
 pub mod error;
 pub mod ingest;
 pub mod join;
@@ -18,6 +19,7 @@ pub mod options;
 pub mod order;
 pub mod serve;
 pub mod sink;
+pub mod stats;
 pub mod store;
 pub mod tiler;
 

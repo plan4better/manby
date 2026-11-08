@@ -11,7 +11,7 @@ name = "manby"
 description = "Builds vector tilesets from geographic features, like tippecanoe, several times faster"
 readme = "README.md"
 license = "BSD-2-Clause"
-license-files = ["LICENSE.md"]
+license-files = ["LICENSE.md", "src/crs/NOTICE.md"]
 requires-python = ">=3.8"
 keywords = ["tippecanoe", "vector-tiles", "pmtiles", "mbtiles", "geojson"]
 classifiers = [
@@ -32,5 +32,5 @@ Repository = "https://github.com/birkskyum/manby"
 bindings = "bin"
 python-source = "python"
 module-name = "manby"
-features = ["mlt"]
+features = ["mlt", "remote"]
 strip = true

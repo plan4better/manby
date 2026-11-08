@@ -1,6 +1,6 @@
 Package: manby
 Title: Vector Tilesets Like 'tippecanoe', Several Times Faster
-Version: 0.1.6
+Version: 0.1.9
 Authors@R: person("Birk", "Skyum", email = "birk.skyum@pm.me", role = c("aut", "cre"))
 Description: Builds vector tilesets in 'PMTiles' and 'MBTiles' from sf data
     frames, 'DuckDB' tables, 'Arrow' tables and files, with the tiles that
@@ -12,6 +12,7 @@ BugReports: https://github.com/birkskyum/manby/issues
 Depends:
     R (>= 4.0)
 Imports:
+    jsonlite,
     nanoarrow,
     processx,
     stats,
@@ -23,7 +24,6 @@ Suggests:
     dbplyr,
     dplyr,
     duckdb,
-    jsonlite,
     sf,
     testthat (>= 3.0.0),
     withr

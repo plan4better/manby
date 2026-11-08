@@ -9,8 +9,10 @@
 # crates.io and PyPI trust this workflow in the `release` environment, so no
 # tokens are kept here.
 #
-# A merge by auto-merge, which the Dependabot workflow turns on with this
-# repository's token, starts no workflows, so a daily run catches up with them.
+# The release PR is opened and updated with a token of the manby-release GitHub
+# App, so that its checks run as on any PR; this repository's own token starts
+# no workflows. The Dependabot workflow merges with the app's token too, and a
+# daily run catches up with anything that still started none.
 name: Release
 
 on:
@@ -33,13 +35,16 @@ jobs:
     if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-24.04
     permissions:
-      actions: write
-      contents: write
-      pull-requests: write
+      contents: read
     concurrency:
       group: release-pr
       cancel-in-progress: false
     steps:
+      - uses: actions/create-github-app-token@v3.3.0
+        id: app
+        with:
+          client-id: Iv23li1ri6i3IgvgBd3A
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -50,13 +55,11 @@ jobs:
         with:
           command: release-pr
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ steps.app.outputs.token }}
       # The R package downloads the manby of its own version, so it takes the
-      # version that the release PR gives manby. A PR that this workflow's
-      # token opens or updates starts no workflows, so its checks are started
-      # here.
+      # version that the release PR gives manby.
       - env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           PR: ${{ steps.release-plz.outputs.pr }}
         run: |
           branch=$(jq -r '.head_branch // empty' <<< "${PR:-null}")
@@ -66,13 +69,11 @@ jobs:
             version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "manby") | .version')
             sed -i "s/^Version: .*/Version: $version/" r/DESCRIPTION
             if ! git diff --quiet; then
-              git -c user.name='github-actions[bot]' \
-                -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              git -c user.name='manby-release[bot]' \
+                -c user.email='353940046+manby-release[bot]@users.noreply.github.com' \
                 commit -am "chore: version the R package $version"
               git push "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" "HEAD:$branch"
             fi
-            gh workflow run ci.yml -R "$GITHUB_REPOSITORY" --ref "$branch"
-            gh workflow run pr-title.yml -R "$GITHUB_REPOSITORY" --ref "$branch"
           fi
 
   release:
@@ -151,6 +152,7 @@ jobs:
           unzip -j dist/*.whl '*.data/scripts/manby' -d $d
           chmod +x $d/manby
           cp LICENSE.md README.md $d/
+          cp src/crs/NOTICE.md $d/NOTICE.md
           tar -czf $d.tar.gz $d
       - uses: actions/upload-artifact@v7
         with:

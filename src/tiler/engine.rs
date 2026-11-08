@@ -73,12 +73,8 @@ impl<'a> Ctx<'a> {
 
         let codes = ValueCodes::new(&store.values);
         let key_slots = store.keys.iter().map(|k| key_slot(k)).collect();
-        let key_accum = store
-            .keys
-            .iter()
-            .map(|k| o.attribute_accum.get(k).copied())
-            .collect();
-        let value_num = if o.attribute_accum.is_empty() {
+        let key_accum = store.keys.iter().map(|k| o.accumulate_op(k)).collect();
+        let value_num = if !o.accumulates() {
             Buf::new()
         } else {
             let mut nums = Buf::with_capacity(store.values.len());

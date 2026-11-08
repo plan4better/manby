@@ -312,6 +312,153 @@ impl Opened {
     }
 }
 
+/// A tile, or a run of identical tiles in a PMTiles archive, which the
+/// first tile names.
+#[derive(Clone, Debug)]
+pub struct Listed {
+    pub z: u8,
+    pub x: u32,
+    pub y: u32,
+    /// The tiles in the run, all at zoom `z`.
+    pub count: u64,
+    /// The size of the tile's data as stored.
+    pub len: u64,
+    /// The PMTiles tile id of the first tile, and where its data is.
+    pub id: u64,
+    pub offset: u64,
+}
+
+impl Opened {
+    pub fn is_mlt(&self) -> bool {
+        self.meta.mlt
+    }
+
+    /// Every tile, from the directories of a PMTiles archive without reading
+    /// the tiles, with runs split where the zoom changes.
+    pub fn list(&self) -> Result<Vec<Listed>, String> {
+        let mut out = Vec::new();
+        match &self.reader {
+            Reader::Pmtiles {
+                file, header, root, ..
+            } => {
+                let mut dirs = vec![(root.clone(), 0usize)];
+                while let Some((dir, depth)) = dirs.pop() {
+                    for e in dir.iter().rev() {
+                        if e.run_length == 0 {
+                            if depth >= 3 {
+                                return Err("leaf directories nested too deep".to_string());
+                            }
+                            let d = pmtiles::deserialize_directory(&decompress(
+                                &read(file, header.leaf_dirs_offset + e.offset, e.length as u64)?,
+                                header.internal_compression,
+                            )?);
+                            dirs.push((Arc::new(d), depth + 1));
+                            continue;
+                        }
+                        let mut id = e.tile_id;
+                        let end = e.tile_id + e.run_length as u64;
+                        while id < end {
+                            let first = pmtiles::tileid_to_zxy(id);
+                            let next_zoom = (4u64.pow(first.z as u32 + 1) - 1) / 3;
+                            let stop = end.min(next_zoom);
+                            out.push(Listed {
+                                z: first.z as u8,
+                                x: first.x as u32,
+                                y: first.y as u32,
+                                count: stop - id,
+                                len: e.length as u64,
+                                id,
+                                offset: header.tile_data_offset + e.offset,
+                            });
+                            id = stop;
+                        }
+                    }
+                }
+            }
+            Reader::Mbtiles(db) => {
+                let db = db.lock().unwrap_or_else(|e| e.into_inner());
+                let mut q = db
+                    .prepare(
+                        "SELECT zoom_level, tile_column, tile_row, length(tile_data) FROM tiles",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = q
+                    .query_map([], |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, i64>(1)?,
+                            r.get::<_, i64>(2)?,
+                            r.get::<_, i64>(3)?,
+                        ))
+                    })
+                    .map_err(|e| e.to_string())?;
+                for row in rows {
+                    let (z, x, row, len) = row.map_err(|e| e.to_string())?;
+                    if !(0..=31).contains(&z) {
+                        continue;
+                    }
+                    out.push(Listed {
+                        z: z as u8,
+                        x: x as u32,
+                        y: ((1i64 << z) - 1 - row) as u32,
+                        count: 1,
+                        len: len as u64,
+                        id: 0,
+                        offset: 0,
+                    });
+                }
+            }
+            Reader::Dir(dir) => {
+                let number = |p: &Path| -> Option<u32> { p.file_stem()?.to_str()?.parse().ok() };
+                for z in std::fs::read_dir(dir).map_err(|e| e.to_string())?.flatten() {
+                    let Some(zn) = number(&z.path()).filter(|&n| n <= 31) else {
+                        continue;
+                    };
+                    let Ok(xs) = std::fs::read_dir(z.path()) else {
+                        continue;
+                    };
+                    for x in xs.flatten() {
+                        let Some(xn) = number(&x.path()) else {
+                            continue;
+                        };
+                        let Ok(ys) = std::fs::read_dir(x.path()) else {
+                            continue;
+                        };
+                        for y in ys.flatten() {
+                            let p = y.path();
+                            let tile = p
+                                .extension()
+                                .is_some_and(|e| e == "pbf" || e == "mvt" || e == "mlt");
+                            if let (true, Some(yn), Ok(m)) = (tile, number(&p), y.metadata()) {
+                                out.push(Listed {
+                                    z: zn as u8,
+                                    x: xn,
+                                    y: yn,
+                                    count: 1,
+                                    len: m.len(),
+                                    id: 0,
+                                    offset: 0,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The data of a listed tile, as stored.
+    pub fn data(&self, t: &Listed) -> Result<Vec<u8>, String> {
+        match &self.reader {
+            Reader::Pmtiles { file, .. } => read(file, t.offset, t.len),
+            _ => self
+                .tile(t.z, t.x, t.y)?
+                .ok_or_else(|| format!("tile {}/{}/{} is gone", t.z, t.x, t.y)),
+        }
+    }
+}
+
 /// The entry for a tile, or for the leaf directory that has it.
 fn find(entries: &[EntryV3], id: u64) -> Option<EntryV3> {
     let i = entries.partition_point(|e| e.tile_id <= id);

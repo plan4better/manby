@@ -16,7 +16,7 @@ use tippecanoe::geometry::{
 use tippecanoe::milo::dtoa_milo;
 use tippecanoe::mvt::{MVT_DOUBLE, MVT_STRING};
 use tippecanoe::options::*;
-use tippecanoe::projection::{PROJECTIONS, encode_hilbert, encode_quadkey, encode_vertex};
+use tippecanoe::projection::{encode_hilbert, encode_quadkey, encode_vertex};
 use tippecanoe::serial::{SerialVal, Vertex, coerce_value};
 
 use super::chunk::{Chunk, MessageKind};
@@ -26,8 +26,10 @@ use crate::store::{Attr, Feature};
 /// What reading needs from the options, worked out once.
 pub struct Config<'o> {
     pub o: &'o Options,
-    pub project: fn(f64, f64, i32) -> (i64, i64),
-    pub projection_alias: &'static str,
+    pub project: crate::crs::Project,
+    pub projection_alias: String,
+    /// `--h3`: how points are binned into hexagons.
+    pub h3: Option<std::sync::Arc<super::h3::Setup>>,
     pub encode_index: fn(u32, u32) -> u64,
     pub geometry_scale: i32,
     pub want_dist: bool,
@@ -46,8 +48,16 @@ impl<'o> Config<'o> {
         let uses_gamma = o.gamma != 0.0;
         Config {
             o,
-            project: PROJECTIONS[o.projection].project,
-            projection_alias: PROJECTIONS[o.projection].alias,
+            project: o.project(),
+            projection_alias: o.projection_alias(),
+            h3: o.h3.then(|| {
+                std::sync::Arc::new(super::h3::Setup::new(
+                    o.minzoom,
+                    o.h3_base(),
+                    &o.attribute_accum,
+                    o.h3_categories.clone(),
+                ))
+            }),
             encode_index: if a(A_HILBERT) {
                 encode_hilbert
             } else {
@@ -473,6 +483,20 @@ pub fn serialize_feature(
         }
     }
 
+    // --cluster-categories: the value to count, read before -x and -y
+    let category = o.cluster_categories.as_ref().and_then(|(attr, values)| {
+        let i = sf
+            .full_keys
+            .iter()
+            .position(|k| k.as_ref() == attr.as_str())?;
+        let v = cstr(&sf.full_values[i].s);
+        let v = match values {
+            Some(list) if !list.iter().any(|l| l == v) => "_other",
+            _ => v,
+        };
+        Some(format!("{}:{}", attr, v))
+    });
+
     let mut id = sf.id;
     let mut has_id = sf.has_id;
     let mut i = sf.full_keys.len() as isize - 1;
@@ -554,6 +578,14 @@ pub fn serialize_feature(
         }
     }
 
+    if let Some(key) = category {
+        sf.full_keys.push(Cow::Owned(key));
+        sf.full_values.push(SerialVal {
+            type_: MVT_DOUBLE,
+            s: "1".to_string(),
+        });
+    }
+
     let max_samples = o.max_tilestats_sample_values;
     let attr_start = chunk.attrs.len() as u64;
     for (k, v) in sf.full_keys.iter().zip(sf.full_values.iter_mut()) {
@@ -596,6 +628,25 @@ pub fn serialize_feature(
         chunk.generate_ids.push(chunk.features.len() as u32);
     }
 
+    // --h3: a point is counted into its hexagons, and shows from the base zoom
+    let mut tippecanoe_minzoom = sf.tippecanoe_minzoom;
+    if let Some(h3) = &cfg.h3
+        && t == VT_POINT
+    {
+        let points = scaled_geometry
+            .iter()
+            .filter(|g| g.op == VT_MOVETO)
+            .map(|g| (cfg.SHIFT_LEFT(g.x), cfg.SHIFT_LEFT(g.y)));
+        chunk.h3.get_or_insert_with(Default::default).add(
+            h3,
+            layername,
+            points,
+            &sf.full_keys,
+            &sf.full_values,
+        );
+        tippecanoe_minzoom = tippecanoe_minzoom.max(h3.base);
+    }
+
     let seq = chunk.features.len() as u64;
     chunk.features.push(Feature {
         keep_index: cfg.keep_index,
@@ -609,7 +660,7 @@ pub fn serialize_feature(
         t: sf.t,
         has_id,
         feature_minzoom: 0,
-        tippecanoe_minzoom: sf.tippecanoe_minzoom as i8,
+        tippecanoe_minzoom: tippecanoe_minzoom as i8,
         tippecanoe_maxzoom: sf.tippecanoe_maxzoom as i8,
         segment: 0,
     });

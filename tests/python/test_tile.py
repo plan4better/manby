@@ -103,6 +103,12 @@ def main():
     assert server.process.poll() is not None
     print("serves %s" % path_out)
 
+    report = manby.stats(path_out, layers=True, largest=3)
+    assert sum(z["tiles"] for z in report["zooms"]) > 0
+    assert all(z["layers"]["points"]["features"] > 0 for z in report["zooms"]), report
+    assert len(report["largest"]) == 3
+    print("stats")
+
     manby.run("--version")
     return 0
 

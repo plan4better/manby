@@ -211,6 +211,7 @@ fn request_header<'a>(r: &'a Request, name: &str) -> Option<&'a str> {
 fn text(status: u16, content_type: &str, body: impl Into<Vec<u8>>) -> ResponseBox {
     Response::from_data(body.into())
         .with_status_code(status)
+        .with_chunked_threshold(usize::MAX)
         .with_header(header("Content-Type", content_type))
         .boxed()
 }
@@ -347,7 +348,9 @@ fn archive(request: &Request, t: &Tileset) -> ResponseBox {
         return empty(500);
     }
     let body: Box<dyn Read + Send> = Box::new(file.take(n));
+    // a length rather than chunks, so a HEAD request gives the archive's size
     let mut r = Response::new(StatusCode(status), Vec::new(), body, Some(n as usize), None)
+        .with_chunked_threshold(usize::MAX)
         .with_header(header("Content-Type", "application/octet-stream"))
         .with_header(header("Accept-Ranges", "bytes"))
         .with_header(header("ETag", &etag));

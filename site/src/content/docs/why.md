@@ -18,7 +18,7 @@ description: What manby is for, how it compares with tippecanoe and the other wa
 | --- | --- | --- | --- | --- |
 | tippecanoe | C++ | GeoJSON, FlatGeobuf, CSV, Geobuf | Drops, coalesces or clusters features evenly across each zoom level until its tiles fit | In review |
 | <span class="whitespace-nowrap">tippecanoe-rs</span> | Rust | As tippecanoe | As tippecanoe, with its tiles | No |
-| manby | Rust, also from Python and R | As tippecanoe, GeoParquet, Arrow, DuckDB queries and data frames, and [other formats by way of GDAL](../guides/other-formats/) | As tippecanoe, with its tiles, or [each tile on its own](../guides/per-tile/) | Yes |
+| manby | Rust, also from Python and R | As tippecanoe, GeoParquet (on disk or in object storage), Arrow, DuckDB queries and data frames, and [other formats by way of GDAL](../guides/other-formats/) | As tippecanoe, with its tiles, or [each tile on its own](../guides/per-tile/), or [H3 hexagons](../guides/h3/) below a base zoom | Yes |
 | tylertoo | Rust, also from Python | GeoParquet | A size limit on each tile on its own, with its own thinning and simplification, so not tippecanoe's tiles | No |
 | planetiler | Java | OpenStreetMap, Shapefile, GeoPackage, GeoJSON, GeoParquet | A profile, in Java or YAML, decides what each zoom level keeps | Yes |
 | GDAL (ogr2ogr) | C++ | Almost any vector format | Each tile on its own, at a lower resolution past 500 kB, then only its largest features | No |
@@ -58,7 +58,6 @@ A line-by-line Rust port of tippecanoe, in [manby's repository](https://github.c
 - **A basemap from OpenStreetMap.** planetiler, or tilemaker, with a profile such as OpenMapTiles. manby tiles the features it is given.
 - **Tiles that follow a live database.** PostGIS's `ST_AsMVT`, served by [Martin](https://maplibre.org/martin/), makes each tile when it is asked for.
 - **Small GeoJSON in a web map.** MapLibre's GeoJSON source, with geojson-vt.
-- **GeoParquet in remote storage.** tylertoo reads only the row groups it needs, by byte range.
 - **Small inputs.** They take seconds with tippecanoe too, and tippecanoe is the reference.
 
 ## When manby fits
@@ -66,5 +65,5 @@ A line-by-line Rust port of tippecanoe, in [manby's repository](https://github.c
 - **tippecanoe's tiles, in a fraction of the time.** Tilesets rebuilt often, in CI or every night, or many of them.
 - **Large inputs on a small machine.** `--memory-budget` keeps memory near a budget, at a fraction of tippecanoe's time.
 - **PMTiles for hosting.** manby writes PMTiles directly, ready for a bucket or a CDN.
-- **GeoParquet, DuckDB, Python and R.** manby reads GeoParquet and Arrow directly, and tiles DuckDB queries and data frames [from Python](../guides/python/) and [from R](../guides/r/).
+- **GeoParquet, DuckDB, Python and R.** manby reads GeoParquet and Arrow directly, from disk or object storage, and tiles DuckDB queries and data frames [from Python](../guides/python/) and [from R](../guides/r/).
 - **GeoPackage, Shapefile or OpenStreetMap.** GDAL's `ogr2ogr`, or any converter like it, makes FlatGeobuf of them, which manby reads in parallel. [Other formats](../guides/other-formats/) shows how.

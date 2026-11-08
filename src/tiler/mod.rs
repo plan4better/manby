@@ -94,6 +94,8 @@ pub struct TileOptions {
     pub clipbboxes: bool,
     pub extra_detail: i32,
     pub attribute_accum: HashMap<String, AttributeOp>,
+    /// `--cluster-categories`: keys starting `kind:`, which are summed.
+    pub category_prefix: Option<String>,
     /// The parsed `-j` feature filter.
     pub filter: Option<JsonTree>,
     pub drop_by_attribute: Option<String>,
@@ -174,6 +176,7 @@ impl Default for TileOptions {
             clipbboxes: false,
             extra_detail: -1,
             attribute_accum: HashMap::new(),
+            category_prefix: None,
             filter: None,
             drop_by_attribute: None,
             drop_by_attribute_descending: false,
@@ -201,6 +204,22 @@ impl Default for TileOptions {
 }
 
 impl TileOptions {
+    /// How a key's values are accumulated: `--accumulate-attribute`'s
+    /// operation, or a sum for `--cluster-categories`' keys.
+    pub fn accumulate_op(&self, key: &str) -> Option<AttributeOp> {
+        self.attribute_accum.get(key).copied().or_else(|| {
+            self.category_prefix
+                .as_deref()
+                .filter(|p| key.starts_with(p))
+                .map(|_| AttributeOp::Sum)
+        })
+    }
+
+    /// Whether any attribute is accumulated.
+    pub fn accumulates(&self) -> bool {
+        !self.attribute_accum.is_empty() || self.category_prefix.is_some()
+    }
+
     /// The tiling options of a run, from the command line options, the zoom
     /// plan and what reading found (the shared nodes).
     pub fn new(o: &Options, plan: &Plan, store: &FeatureStore) -> TileOptions {
@@ -237,6 +256,10 @@ impl TileOptions {
             clipbboxes: !o.clip_bboxes.is_empty(),
             extra_detail: o.extra_detail,
             attribute_accum: o.attribute_accum.clone(),
+            category_prefix: o
+                .cluster_categories
+                .as_ref()
+                .map(|(a, _)| format!("{}:", a)),
             filter: o.filter.clone(),
             drop_by_attribute: (!o.drop_by_attribute_as_needed_attribute.is_empty())
                 .then(|| o.drop_by_attribute_as_needed_attribute.clone()),

@@ -389,7 +389,7 @@ fn parse_coordinates(
     {
         let lon = j.array_get(0).number();
         let lat = j.array_get(1).number();
-        let (x, y) = (r.cfg.project)(lon, lat, 32);
+        let (x, y) = r.cfg.project.world(lon, lat, 32);
 
         if j.array_len() > 2 && chunk.first("dimensions") {
             chunk.messages.push(Message {

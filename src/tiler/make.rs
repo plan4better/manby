@@ -324,8 +324,7 @@ fn promote_attribute(
 
 /// `preserve_attributes`: accumulates the attributes of the dropped candidate onto `p`.
 fn preserve_attributes(ax: &Attrs<'_>, c: usize, p: &mut TF, key_pool: &mut KeyPool) {
-    let accum = &ax.ctx.o.attribute_accum;
-    if accum.is_empty() {
+    if !ax.ctx.o.accumulates() {
         return;
     }
     for a in ax.cand(c) {
@@ -355,11 +354,11 @@ fn preserve_attributes(ax: &Attrs<'_>, c: usize, p: &mut TF, key_pool: &mut KeyP
     if full != NO_LIST {
         let (keys, values) = &ax.rt.full[full as usize];
         for (key, sv) in keys.iter().zip(values.iter()) {
-            if let Some(op) = accum.get(key.as_str()) {
+            if let Some(op) = ax.ctx.o.accumulate_op(key.as_str()) {
                 promote_attribute(ax, key, None, p, key_pool);
                 let x = p.extra_mut();
                 accum::preserve(
-                    op,
+                    &op,
                     key,
                     sv.type_,
                     &sv.s,

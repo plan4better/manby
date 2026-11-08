@@ -107,6 +107,11 @@ pub struct Options {
     pub tile_format: crate::mlt::TileFormat,
     /// `--mlt-profile`: which encodings MLT tiles may use.
     pub mlt_profile: crate::mlt::MltProfile,
+    /// `--bbox`: only the rows of GeoParquet and Arrow inputs whose
+    /// geometries' bounding boxes overlap this longitude and latitude box,
+    /// as minimum longitude, minimum latitude, maximum longitude, maximum
+    /// latitude.
+    pub bbox: Option<[f64; 4]>,
 
     /// `argv[0]`, for messages.
     pub program: String,
@@ -127,6 +132,21 @@ pub struct Options {
     pub read_parallel: bool,
     /// Index into `tippecanoe::projection::PROJECTIONS` (`-s`).
     pub projection: usize,
+    /// `-s` with a CRS that tippecanoe doesn't have, such as `EPSG:25832`,
+    /// which crs-defs defines: the input's coordinates are made longitude
+    /// and latitude first.
+    pub source_crs: Option<String>,
+    /// `--h3`: below `--h3-base-zoom`, each layer's points binned into H3
+    /// hexagons in a layer of their own; `--h3-categories` counts the
+    /// values of an attribute in each.
+    pub h3: bool,
+    pub h3_base_zoom: Option<i32>,
+    pub h3_categories: Option<String>,
+    /// `--cluster-categories=kind`, or `kind:park,museum`: each feature
+    /// gets `kind:<value>` of 1, which clustering and coalescing add up, so
+    /// a cluster counts the values of its points; values not listed count
+    /// as `kind:_other`.
+    pub cluster_categories: Option<(String, Option<Vec<String>>)>,
 
     pub maxzoom: i32,
     pub minzoom: i32,
@@ -227,6 +247,7 @@ impl Default for Options {
             zlib_tiles: false,
             tile_format: crate::mlt::TileFormat::Mvt,
             mlt_profile: crate::mlt::MltProfile::Web,
+            bbox: None,
             program: "manby".to_string(),
             commandline: String::new(),
             sources: Vec::new(),
@@ -236,6 +257,11 @@ impl Default for Options {
             attribution: None,
             read_parallel: false,
             projection: 0,
+            source_crs: None,
+            h3: false,
+            h3_base_zoom: None,
+            h3_categories: None,
+            cluster_categories: None,
             maxzoom: 14,
             minzoom: 0,
             guess_maxzoom: false,
@@ -316,6 +342,32 @@ fn parse_size(s: &str) -> Option<u64> {
 
 impl Options {
     /// The memory budget in bytes.
+    /// How the input's coordinates become world coordinates (`-s`).
+    pub fn project(&self) -> crate::crs::Project {
+        match &self.source_crs {
+            Some(code) => crate::crs::Project::Crs(std::sync::Arc::new(
+                crate::crs::Reprojection::new(code).expect("a CRS checked when parsed"),
+            )),
+            None => crate::crs::Project::Tippecanoe(PROJECTIONS[self.projection].project),
+        }
+    }
+
+    /// The name of the input's CRS that a GeoJSON file's `crs` is expected
+    /// to give.
+    pub fn projection_alias(&self) -> String {
+        match &self.source_crs {
+            Some(code) => format!("urn:ogc:def:crs:{}", code.replacen(':', "::", 1)),
+            None => PROJECTIONS[self.projection].alias.to_string(),
+        }
+    }
+
+    /// `--h3`'s base zoom: given, or two zooms below the maximum.
+    pub fn h3_base(&self) -> i32 {
+        self.h3_base_zoom
+            .unwrap_or(self.maxzoom - 2)
+            .clamp(self.minzoom, self.maxzoom.max(self.minzoom))
+    }
+
     pub fn memory_budget(&self) -> u64 {
         self.memory_budget
             .unwrap_or_else(|| tippecanoe::platform::calc_memsize() as u64 / 2)
@@ -378,13 +430,23 @@ impl Options {
             self.tippecanoe_cpus = tippecanoe_cpus()?;
         }
 
+        if self.h3 && self.guess_maxzoom && self.h3_base_zoom.is_none() {
+            return Err(Error::new(
+                EXIT_ARGS,
+                format!(
+                    "{}: --h3 with -zg needs --h3-base-zoom, the zoom from which the points show",
+                    argv0
+                ),
+            ));
+        }
+
         // Wait until here to project the bounding box, so that the behavior is
         // the same no matter what order the projection and bounding box are
         // specified in
-        let project = PROJECTIONS[self.projection].project;
+        let project = self.project();
         for c in self.clip_bboxes.iter_mut() {
-            (c.minx, c.maxy) = project(c.lon1, c.lat1, 32);
-            (c.maxx, c.miny) = project(c.lon2, c.lat2, 32);
+            (c.minx, c.maxy) = project.world(c.lon1, c.lat1, 32);
+            (c.maxx, c.miny) = project.world(c.lon2, c.lat2, 32);
         }
 
         if self.max_tilestats_sample_values < self.max_tilestats_values {
@@ -1135,6 +1197,11 @@ fn long_options_orig() -> Vec<LongOption> {
         opt("memory-budget", REQ, b'~'),
         opt("tile-format", REQ, b'~'),
         opt("mlt-profile", REQ, b'~'),
+        opt("bbox", REQ, b'~'),
+        opt("h3", NO, b'~'),
+        opt("h3-base-zoom", REQ, b'~'),
+        opt("h3-categories", REQ, b'~'),
+        opt("cluster-categories", REQ, b'~'),
         heading(""),
         opt("prevent", REQ, b'p'),
         opt("additional", REQ, b'a'),
@@ -1423,6 +1490,33 @@ pub fn parse_args(argv: &[String]) -> crate::Result<Options> {
                             ));
                         }
                     },
+                    "h3" => o.h3 = true,
+                    "h3-base-zoom" => {
+                        o.h3 = true;
+                        o.h3_base_zoom = Some(require_int(&optarg, "H3 base zoom", &argv0)?)
+                    }
+                    "h3-categories" => {
+                        o.h3 = true;
+                        o.h3_categories = Some(arg.to_string())
+                    }
+                    "cluster-categories" => {
+                        o.cluster_categories = Some(match arg.split_once(':') {
+                            Some((attr, values)) => (
+                                attr.to_string(),
+                                Some(values.split(',').map(String::from).collect()),
+                            ),
+                            None => (arg.to_string(), None),
+                        })
+                    }
+                    "bbox" => match sscanf_f64x4(arg) {
+                        Some(b) if b[0] < b[2] && b[1] < b[3] => o.bbox = Some(b),
+                        _ => {
+                            return err_args(format!(
+                                "{}: --bbox must be minlon,minlat,maxlon,maxlat, with the minimums below the maximums, not {}",
+                                argv0, arg
+                            ));
+                        }
+                    },
                     "mlt-profile" => match crate::mlt::MltProfile::parse(arg) {
                         Some(p) => o.mlt_profile = p,
                         None => {
@@ -1662,10 +1756,19 @@ pub fn parse_args(argv: &[String]) -> crate::Result<Options> {
                 .iter()
                 .position(|p| p.name == arg || p.alias == arg)
             {
-                Some(p) => o.projection = p,
-                None => {
-                    return err_args(format!("Unknown projection (-s): {}", arg));
+                Some(p) => {
+                    o.projection = p;
+                    o.source_crs = None;
                 }
+                None => match crate::crs::Reprojection::new(arg) {
+                    Ok(r) => {
+                        o.projection = 0;
+                        o.source_crs = Some(r.code);
+                    }
+                    Err(_) => {
+                        return err_args(format!("Unknown projection (-s): {}", arg));
+                    }
+                },
             },
 
             b'S' => {

@@ -8,7 +8,7 @@ members = [
 
 [package]
 name = "manby"
-version = "0.1.6"
+version = "0.1.9"
 edition = "2024"
 description = "Builds vector tilesets from geographic features, like tippecanoe, several times faster"
 license = "BSD-2-Clause"
@@ -38,8 +38,20 @@ tippecanoe-rs = { version = "2.82.1", path = "crates/tippecanoe-rs" }
 wagyu = { package = "manby-wagyu", version = "0.5.1", path = "crates/wagyu" }
 xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 rustc-hash = "2.1"
+# coordinates in other CRSs, with crs-defs' definitions (src/crs/)
+proj4rs = "0.3"
+# --h3: points binned into H3 hexagons below a base zoom
+h3o = "0.11"
 # manby serve
 tiny_http = "0.12"
+# GeoParquet in object storage or on the web
+object_store = { version = "0.14", default-features = false, features = ["aws", "gcp", "azure", "http"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
+futures = { version = "0.3", optional = true }
+url = { version = "2", optional = true }
+bytes = { version = "1", optional = true }
+webpki-root-certs = { version = "1", optional = true }
+arrow-select = "60.1"
 
 [dev-dependencies]
 libz-sys = "1.1"
@@ -48,6 +60,8 @@ libz-sys = "1.1"
 # MapLibre Tile output (`--tile-format=mlt`). mlt-core needs Rust 1.98:
 # cargo +1.98.1 build --release --features mlt
 mlt = ["dep:mlt-core"]
+# GeoParquet read from s3://, gs://, az:// and https:// URLs
+remote = ["dep:object_store", "dep:tokio", "dep:futures", "dep:url", "dep:bytes", "dep:webpki-root-certs", "parquet/object_store"]
 
 [[example]]
 name = "mlt_sizes"

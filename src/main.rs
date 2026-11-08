@@ -5,7 +5,7 @@
 //! tippecanoe-enumerate, tippecanoe-overzoom and tippecanoe-json-tool. Each
 //! program's own name also works as the subcommand, and run under that name
 //! (a link, say), manby is that program. `manby serve` serves tilesets with
-//! a map of them.
+//! a map of them, and `manby stats` reports their tiles' sizes.
 
 use std::ffi::OsString;
 
@@ -68,6 +68,12 @@ fn main() {
         // under tile-join's name, manby is tile-join
         let commandline = tippecanoe::text::format_commandline(&argv);
         join(manby::join::args::parse_args(&argv, commandline))
+    } else if subcommand == "stats" {
+        let mut stats_argv = vec![format!("{} stats", argv[0])];
+        stats_argv.extend_from_slice(&argv[2..]);
+        manby::stats::parse_args(&stats_argv)
+            .and_then(|o| manby::stats::stats(&o))
+            .map(|_| false)
     } else if subcommand == "serve" {
         let mut serve_argv = vec![format!("{} serve", argv[0])];
         serve_argv.extend_from_slice(&argv[2..]);

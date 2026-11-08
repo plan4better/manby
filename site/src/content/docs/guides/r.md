@@ -58,7 +58,7 @@ tile(list(roads = roads, places = "places.parquet"), "map.pmtiles", maximum_zoom
 
 ### Viewing
 
-`serve()` serves tilesets with a map of them, in the viewer pane. [Viewing tilesets](../serve/) has more.
+`serve()` serves tilesets with a map of them, in the viewer pane, and `tile_stats()` reports their tiles' sizes and features. [Looking at tilesets](../serve/) has more.
 
 ```r
 server <- serve("roads.pmtiles")

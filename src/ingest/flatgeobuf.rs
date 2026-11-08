@@ -75,7 +75,7 @@ fn read_points(cfg: &Config<'_>, geometry: &Geometry<'_>) -> DrawVec {
     if let Some(xy) = geometry.xy() {
         let mut i = 0;
         while i + 1 < xy.len() {
-            let (x, y) = (cfg.project)(xy.get(i), xy.get(i + 1), 32);
+            let (x, y) = cfg.project.world(xy.get(i), xy.get(i + 1), 32);
             dv.push(Draw::new(VT_MOVETO, x, y));
             i += 2;
         }
@@ -93,7 +93,9 @@ fn read_line_part(cfg: &Config<'_>, geometry: &Geometry<'_>) -> DrawVec {
 
     let mut i: u32 = 0;
     while (i as usize) + 1 < xy.len() {
-        let (x, y) = (cfg.project)(xy.get(i as usize), xy.get(i as usize + 1), 32);
+        let (x, y) = cfg
+            .project
+            .world(xy.get(i as usize), xy.get(i as usize + 1), 32);
         let at_end = match &ends {
             Some(ends) => current_end < ends.len() && i == ends.get(current_end).wrapping_mul(2),
             None => false,

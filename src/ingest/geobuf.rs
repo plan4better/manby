@@ -110,7 +110,9 @@ fn read_point(cfg: &Config<'_>, coords: &[i64], dim: usize, e: f64) -> crate::Re
     if coords.len() < 2 {
         return Err(impossible("Geometry has fewer than 2 coordinates".into()));
     }
-    let (x, y) = (cfg.project)(coords[0] as f64 / e, coords[1] as f64 / e, 32);
+    let (x, y) = cfg
+        .project
+        .world(coords[0] as f64 / e, coords[1] as f64 / e, 32);
     Ok(vec![Draw::new(VT_MOVETO, x, y)])
 }
 
@@ -145,7 +147,7 @@ fn read_line_part(
             p[d] = prev[d] as f64 / e;
         }
 
-        let (x, y) = (cfg.project)(p[0], p[1], 32);
+        let (x, y) = cfg.project.world(p[0], p[1], 32);
         let op = if i == start { VT_MOVETO } else { VT_LINETO };
         dv.push(Draw::new(op, x, y));
         i += dim;

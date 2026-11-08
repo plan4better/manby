@@ -1,5 +1,7 @@
 # Dependabot's minor and patch updates merge themselves once the required
-# checks pass. Major updates wait for review.
+# checks pass. Major updates wait for review. Auto-merge is turned on with the
+# manby-release GitHub App's token, so that the merge starts the workflows that
+# run on main, which this repository's own token would not.
 name: Auto-merge
 
 on: pull_request
@@ -16,7 +18,13 @@ jobs:
       - uses: dependabot/fetch-metadata@v3
         id: meta
       - if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        uses: actions/create-github-app-token@v3.3.0
+        id: app
+        with:
+          client-id: Iv23li1ri6i3IgvgBd3A
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      - if: steps.meta.outputs.update-type != 'version-update:semver-major'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           PR: ${{ github.event.pull_request.html_url }}
         run: gh pr merge --auto --squash "$PR"

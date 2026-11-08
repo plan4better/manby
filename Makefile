@@ -30,6 +30,7 @@ tools:
 
 unit:
 	$(CARGO) test --release
+	$(CARGO) test --release --features remote --test remote
 
 test: unit test-golden test-geobuf
 

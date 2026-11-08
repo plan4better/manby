@@ -19,7 +19,8 @@ The options are tippecanoe's: ``maximum_zoom=14`` is ``--maximum-zoom=14``,
 ``drop_densest_as_needed=True`` is ``--drop-densest-as-needed``, and a list
 repeats an option. Arguments after the output are passed as they are.
 
-``serve`` serves tilesets with a map of them, in the browser or in a notebook.
+``serve`` serves tilesets with a map of them, in the browser or in a notebook,
+and ``stats`` reports the sizes of their tiles.
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ import time
 import webbrowser
 from typing import Any, Mapping, Sequence
 
-__all__ = ["tile", "serve", "run", "binary", "Server", "ManbyError"]
+__all__ = ["tile", "serve", "stats", "run", "binary", "Server", "ManbyError"]
 
 
 class ManbyError(RuntimeError):
@@ -308,6 +309,20 @@ def serve(
     if open:
         webbrowser.open(url)
     return server
+
+
+def stats(tileset: str | os.PathLike, layers: bool = False, largest: int = 10) -> dict:
+    """The sizes of a tileset's tiles at each zoom, as stored, and the
+    ``largest`` tiles. ``layers`` also counts the features of each layer at
+    each zoom, from every tile. The result is ``manby stats --json``'s."""
+    argv = [binary(), "stats", "--json", "--largest=%d" % largest]
+    if layers:
+        argv.append("--layers")
+    argv.append(os.fspath(tileset))
+    done = subprocess.run(argv, stdout=subprocess.PIPE, text=True)
+    if done.returncode != 0:
+        raise ManbyError(done.returncode, argv[1:])
+    return json.loads(done.stdout)
 
 
 def main() -> None:

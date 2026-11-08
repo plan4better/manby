@@ -116,6 +116,15 @@ test_that("serve serves a tileset and its map", {
   expect_error(serve(file.path(dir, "nothing.pmtiles"), port = 0, open = FALSE), class = "manby_error")
 })
 
+test_that("tile_stats reports the tiles' sizes and features", {
+  s <- tile_stats(file.path(dir, "fgb", "points.pmtiles"), layers = TRUE, largest = 3)
+  expect_true(sum(s$zooms$tiles) > 0)
+  expect_equal(nrow(s$largest), 3)
+  expect_equal(unique(s$layers$layer), "points")
+  expect_true(all(s$layers$features > 0))
+  expect_equal(sum(s$layers$tiles), sum(s$zooms$tiles))
+})
+
 test_that("manby runs", {
   expect_match(paste(capture.output(manby("--version"), type = "message"), collapse = ""), "^manby ")
 })

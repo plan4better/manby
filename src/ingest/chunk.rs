@@ -146,13 +146,14 @@ impl Interner {
     }
 
     /// Frees the hash table, which only interning needs, and the room that
-    /// growing left. The hashes stay, for merging.
+    /// growing left, and settles the rest where the memory budget says. The
+    /// hashes stay, for merging.
     pub fn finish(&mut self) {
         self.table = Buf::new();
-        self.types.shrink_to_fit();
-        self.hashes.shrink_to_fit();
-        self.ends.shrink_to_fit();
-        self.bytes.shrink_to_fit();
+        self.types.settle();
+        self.hashes.settle();
+        self.ends.settle();
+        self.bytes.settle();
     }
 
     /// Frees what only interning needs: the hash table and the hashes.
@@ -377,19 +378,20 @@ pub struct Chunk {
 }
 
 impl Chunk {
-    /// Frees what only parsing needs, and the room that growing left: a read
+    /// Frees what only parsing needs, and the room that growing left, and
+    /// settles the rest where the memory budget says (`Buf::settle`): a read
     /// chunk waits for the others before they are merged.
     pub fn finish(&mut self) {
         self.keys.finish();
         self.values.finish();
-        self.features.shrink_to_fit();
-        self.ids.shrink_to_fit();
-        self.extents.shrink_to_fit();
-        self.label_points.shrink_to_fit();
-        self.geometry.shrink_to_fit();
-        self.attrs.shrink_to_fit();
-        self.dist_terms.shrink_to_fit();
-        self.area_terms.shrink_to_fit();
+        self.features.settle();
+        self.ids.settle();
+        self.extents.settle();
+        self.label_points.settle();
+        self.geometry.settle();
+        self.attrs.settle();
+        self.dist_terms.settle();
+        self.area_terms.settle();
     }
 
     pub fn new(layers: &[String]) -> Chunk {

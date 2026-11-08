@@ -11,6 +11,7 @@ use tippecanoe::geometry::{VT_LINETO, VT_MOVETO};
 use tippecanoe::mvt::MVT_STRING;
 use tippecanoe::text::fnv1a_cstr;
 
+use crate::buf::Buf;
 use crate::store::{Feature, FeatureStore, PoolOffsets};
 
 /// The size of each of a reader's dedup tables (sic, not 65536).
@@ -34,16 +35,18 @@ struct Node {
 /// One reader's string pool as tippecanoe's `addpool` fills it: the offsets
 /// only, with the dedup tables, the search tree and its depth limit, and the
 /// switch to appending without deduplication once the pool would take more
-/// than `limit` bytes of memory.
+/// than `limit` bytes of memory. The limit is tippecanoe's, from the
+/// machine's memory, so the pool and the tree are kept where the memory
+/// budget says.
 pub struct Pool {
     /// The part of the pool that is kept in memory.
-    bytes: Vec<u8>,
+    bytes: Buf<u8>,
     off: usize,
     full: bool,
     limit: usize,
     /// The search tree. Node 0 is the placeholder that tippecanoe writes
     /// first, so that 0 can mean no node.
-    nodes: Vec<Node>,
+    nodes: Buf<Node>,
     root: usize,
     dedup: [Vec<i64>; 2],
 }
@@ -69,12 +72,14 @@ impl Pool {
     /// A pool that stops deduplicating at `limit` bytes, tippecanoe's
     /// `memsize / CPUS / 10`.
     pub fn new(limit: usize) -> Pool {
+        let mut nodes = Buf::new();
+        nodes.push(Node::default());
         Pool {
-            bytes: Vec::new(),
+            bytes: Buf::new(),
             off: 0,
             full: false,
             limit,
-            nodes: vec![Node::default()],
+            nodes,
             root: 0,
             dedup: [vec![-1; DEDUP], vec![-1; DEDUP]],
         }
@@ -253,7 +258,8 @@ pub(super) fn layout(
     pool_limit: usize,
     geometry_scale: i32,
 ) {
-    let mut offsets = vec![PoolOffsets::default(); store.attrs.len()];
+    let mut offsets: Buf<PoolOffsets> = Buf::new();
+    offsets.resize(store.attrs.len(), PoolOffsets::default());
     let mut by_segment: Vec<Vec<(&Span, &mut [PoolOffsets])>> =
         (0..segments).map(|_| Vec::new()).collect();
     let mut rest: &mut [PoolOffsets] = &mut offsets;

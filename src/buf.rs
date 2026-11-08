@@ -9,6 +9,7 @@
 //! page cache keeps them for the next use as long as the machine has room.
 
 use std::alloc::Layout;
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::marker::PhantomData;
@@ -87,9 +88,33 @@ pub fn spilling() -> bool {
     PAGER.mapping.load(Relaxed)
 }
 
+thread_local! {
+    /// Whether this thread's vectors stay on the heap for now (`on_heap`).
+    static ON_HEAP: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Runs `f` with the vectors this thread grows kept on the heap, whatever
+/// the budget, for work that builds vectors a little at a time and then
+/// settles them (`Buf::settle`): growing a vector in the file maps, copies
+/// and unmaps a region at every doubling, under the pager's lock, which is
+/// many times slower when threads do it at once.
+pub fn on_heap<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ON_HEAP.set(self.0);
+        }
+    }
+    let _restore = Restore(ON_HEAP.replace(true));
+    f()
+}
+
 fn place_in_file(bytes: usize) -> bool {
     let budget = PAGER.budget.load(Relaxed);
-    bytes >= FILE_MIN && budget != u64::MAX && PAGER.heap.load(Relaxed) + bytes as u64 > budget / 8
+    bytes >= FILE_MIN
+        && budget != u64::MAX
+        && PAGER.heap.load(Relaxed) + bytes as u64 > budget / 8
+        && !ON_HEAP.get()
 }
 
 fn file_alloc(bytes: usize) -> Option<NonNull<u8>> {
@@ -344,6 +369,17 @@ impl<T> Buf<T> {
     /// its unused end takes no memory, and moving it would copy it all.
     pub fn shrink_to_fit(&mut self) {
         if self.cap > self.len && self.kind != Kind::File {
+            self.set_capacity(self.len);
+        }
+    }
+
+    /// For a vector that is done growing: gives back heap memory beyond the
+    /// length, and moves heap storage to the file if the budget says so.
+    pub fn settle(&mut self) {
+        if self.kind == Kind::File {
+            return;
+        }
+        if self.cap > self.len || (!needs_drop::<T>() && place_in_file(self.len * size_of::<T>())) {
             self.set_capacity(self.len);
         }
     }

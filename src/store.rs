@@ -574,7 +574,7 @@ pub struct FeatureStore {
     // Without `-at` it is left empty.
     /// For each entry of `attrs`, its offsets in its feature's segment's
     /// string pool.
-    pub pool_offsets: Vec<PoolOffsets>,
+    pub pool_offsets: Buf<PoolOffsets>,
     /// The bytes the features take in tippecanoe's geometry files: for each,
     /// its length as a varint and its serialized form.
     pub serialized_bytes: u64,
@@ -718,8 +718,8 @@ impl FeatureStore {
         let pooled = !self.pool_offsets.is_empty();
         let mut new_geometry: Buf<u8> = Buf::with_capacity(g as usize);
         let mut new_attrs: Buf<Attr> = Buf::with_capacity(a as usize);
-        let mut new_pool: Vec<PoolOffsets> =
-            Vec::with_capacity(if pooled { a as usize } else { 0 });
+        let mut new_pool: Buf<PoolOffsets> =
+            Buf::with_capacity(if pooled { a as usize } else { 0 });
         let to = (
             Shared(new_geometry.as_mut_ptr()),
             Shared(new_attrs.as_mut_ptr()),

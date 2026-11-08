@@ -344,6 +344,30 @@ struct Parts {
     dist_sum: f64,
     dist_count: usize,
     area_sum: f64,
+    /// Attribute statistics already taken out of chunks, by layer name, so
+    /// that each chunk's samples do not wait for the merge.
+    stats: BTreeMap<String, BTreeMap<String, Stat>>,
+}
+
+impl Parts {
+    /// Takes the chunk's attribute statistics into `stats`. Merging them is
+    /// a union of samples cut to the smallest, so the order does not matter.
+    fn take_stats(&mut self, chunk: &mut Chunk, max_samples: usize) {
+        for l in chunk.layers.iter_mut() {
+            if l.stats.is_empty() {
+                continue;
+            }
+            let into = self.stats.entry(l.name.clone()).or_default();
+            for (k, st) in std::mem::take(&mut l.stats) {
+                match into.get_mut(&k) {
+                    Some(have) => have.merge(st, max_samples),
+                    None => {
+                        into.insert(k, st);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Adds the accepted chunks of one input to `parts`, numbering their features
@@ -488,6 +512,7 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
         dist_sum: 0.0,
         dist_count: 0,
         area_sum: 0.0,
+        stats: BTreeMap::new(),
     };
     let mut once: HashSet<&'static str> = HashSet::new();
     let mut overall_offset: i64 = 0;
@@ -794,6 +819,10 @@ fn read_inputs1(options: &Options, threads: usize) -> crate::Result<FeatureStore
     Ok(merge(parts, &sources, &layer_names, &layer_source, options))
 }
 
+/// Rows of an Arrow table or FlatGeobuf file read at a time, in whole
+/// batches of [`Batched`].
+const WINDOW_ROWS: usize = 1 << 18;
+
 /// tippecanoe's numbering of the features of a FlatGeobuf file. It runs its
 /// queue of features when it holds more than `CPUS * 500`, parsing each such
 /// batch in `CPUS` ranges, each numbered from its own offset into the batch,
@@ -838,35 +867,27 @@ impl Batched {
         ranges
     }
 
-    /// Numbers the chunks read from `ranges`, one for each range.
-    fn number<'c>(
+    /// The `seq` of the first feature of each of `ranges`, which start at a
+    /// batch, from the number of features each range read, and where the
+    /// next batch starts. Each range is numbered from its own offset into its
+    /// batch, and the next batch from the end of the batch's last range.
+    fn bases(
         &mut self,
-        parts: &mut Parts,
         ranges: &[(usize, usize, usize)],
-        chunks: impl Iterator<Item = &'c Chunk>,
-    ) {
-        let chunks: Vec<&Chunk> = chunks.collect();
-        let mut k = 0;
-        while k < ranges.len() {
-            let size_start = ranges[k].0;
+        read: impl Fn(usize) -> usize,
+    ) -> Vec<i64> {
+        let mut bases = Vec::with_capacity(ranges.len());
+        for (k, batch) in ranges.chunks(self.cpus).enumerate() {
+            let size_start = batch[0].0;
             let mut last_end = self.base;
-            for (j, chunk) in chunks[k..k + self.cpus].iter().enumerate() {
-                let (a, _, i) = ranges[k + j];
+            for (j, &(a, _, _)) in batch.iter().enumerate() {
                 let base = self.base + (a - size_start) as i64;
-                parts.seq_base.push(base);
-                parts.segment.push(i as u16);
-                last_end = base + chunk.features.len() as i64;
-                for t in &chunk.dist_terms {
-                    self.seg_dist[i] += t;
-                }
-                for t in &chunk.area_terms {
-                    self.seg_area[i] += t;
-                }
-                parts.dist_count += chunk.dist_count;
+                bases.push(base);
+                last_end = base + read(k * self.cpus + j) as i64;
             }
             self.base = last_end;
-            k += self.cpus;
         }
+        bases
     }
 
     /// Adds up the `-zg` sums at the end of the file, and gives the `seq`
@@ -899,40 +920,180 @@ fn read_fgb(
     let h = flatgeobuf::read_header(data, cfg.o.quiet)?;
 
     let mut numbering = Batched::new(cpus, *overall_offset);
-    let ranges = numbering.ranges(h.features.len());
-
-    let chunks: Vec<(Chunk, crate::Result<()>)> = ranges
-        .par_iter()
-        .map(|&(a, b, _)| {
-            let mut chunk = Chunk::new(layer_names);
-            let mut r = Ok(());
-            for f in a..b {
-                let id = if h.sequence_ids { f as i64 } else { -1 };
-                r = flatgeobuf::read_feature(&mut chunk, cfg, &h, h.features[f], id, layername);
-                if r.is_err() {
-                    break;
+    let window = numbering.batch() * WINDOW_ROWS.div_ceil(numbering.batch());
+    let mut start = 0;
+    while start < h.features.len() {
+        let n = window.min(h.features.len() - start);
+        let ranges: Vec<(usize, usize, usize)> = numbering
+            .ranges(n)
+            .into_iter()
+            .map(|(a, b, i)| (start + a, start + b, i))
+            .collect();
+        read_batched(
+            parts,
+            &ranges,
+            &mut numbering,
+            layer_names,
+            cfg.o.max_tilestats_sample_values,
+            reading_name,
+            once,
+            stderr,
+            |chunk, a, b| {
+                for f in a..b {
+                    let id = if h.sequence_ids { f as i64 } else { -1 };
+                    flatgeobuf::read_feature(chunk, cfg, &h, h.features[f], id, layername)?;
                 }
+                Ok(())
+            },
+        )?;
+        start += n;
+    }
+    *overall_offset = numbering.finish(parts);
+    flush(stderr);
+    Ok(())
+}
+
+/// What one job of `read_batched` read.
+struct BatchedRead {
+    chunk: Chunk,
+    segment: usize,
+    /// The ranges it read, in order: each one's index in the window's
+    /// ranges, and where it starts in the chunk's features and messages.
+    ranges: Vec<(usize, usize, usize)>,
+    result: crate::Result<()>,
+}
+
+/// Reads `ranges`, which start at a batch of `numbering`, into one chunk for
+/// each segment and run of batches, which reads its ranges in turn, rather
+/// than into a chunk for each range. A range holds about 500 rows, too few
+/// for its columns to be large vectors, which the memory budget can move to
+/// a file, and all the chunks of an input wait for the merge. The features
+/// are numbered as tippecanoe numbers each range's, the `-zg` sums added in
+/// its order, and the messages printed in the order of the ranges.
+#[allow(clippy::too_many_arguments)]
+fn read_batched(
+    parts: &mut Parts,
+    ranges: &[(usize, usize, usize)],
+    numbering: &mut Batched,
+    layer_names: &[String],
+    max_samples: usize,
+    reading_name: &str,
+    once: &mut HashSet<&'static str>,
+    stderr: &mut Vec<u8>,
+    read_range: impl Fn(&mut Chunk, usize, usize) -> crate::Result<()> + Sync,
+) -> crate::Result<()> {
+    let cpus = numbering.cpus;
+    let batches = ranges.len() / cpus;
+    // enough jobs to keep the threads busy, of at least 16 batches each
+    let runs = (2 * rayon::current_num_threads())
+        .div_ceil(cpus)
+        .clamp(1, (batches / 16).max(1));
+    let jobs: Vec<(usize, usize)> = (0..runs)
+        .flat_map(|r| (0..cpus).map(move |s| (r, s)))
+        .collect();
+    let mut reads: Vec<BatchedRead> = jobs
+        .par_iter()
+        .map(|&(r, s)| {
+            let mut chunk = Chunk::new(layer_names);
+            let mut read = Vec::new();
+            let mut result = Ok(());
+            // a window's chunks grow on the heap, and are settled once read
+            crate::buf::on_heap(|| {
+                for b in batches * r / runs..batches * (r + 1) / runs {
+                    let k = b * cpus + s;
+                    read.push((k, chunk.features.len(), chunk.messages.len()));
+                    result = read_range(&mut chunk, ranges[k].0, ranges[k].1);
+                    if result.is_err() {
+                        break;
+                    }
+                }
+            });
+            chunk.finish();
+            BatchedRead {
+                chunk,
+                segment: s,
+                ranges: read,
+                result,
             }
-            (chunk, r)
         })
         .collect();
 
-    numbering.number(parts, &ranges, chunks.iter().map(|(c, _)| c));
-    *overall_offset = numbering.finish(parts);
-
-    for (chunk, r) in chunks {
-        print_messages(stderr, reading_name, &chunk.messages, 0, once);
-        if let Err(e) = r {
-            flush(stderr);
-            return Err(e);
+    // where each range was read: its job, and its place among the job's
+    // ranges. A range after an error in its job was not read.
+    let mut at: Vec<Option<(usize, usize)>> = vec![None; ranges.len()];
+    for (j, rd) in reads.iter().enumerate() {
+        for (p, &(k, _, _)) in rd.ranges.iter().enumerate() {
+            at[k] = Some((j, p));
         }
+    }
+    let end = |rd: &BatchedRead, p: usize| -> (usize, usize) {
+        match rd.ranges.get(p + 1) {
+            Some(&(_, f, m)) => (f, m),
+            None => (rd.chunk.features.len(), rd.chunk.messages.len()),
+        }
+    };
+    let bases = numbering.bases(ranges, |k| match at[k] {
+        Some((j, p)) => end(&reads[j], p).0 - reads[j].ranges[p].1,
+        None => 0,
+    });
+    // A feature's `seq` is its place in its chunk so far, and becomes its
+    // range's base and its place in its range, less the chunk's base.
+    reads.par_iter_mut().for_each(|rd| {
+        let Some(&(k0, _, _)) = rd.ranges.first() else {
+            return;
+        };
+        for p in 0..rd.ranges.len() {
+            let (k, f0, _) = rd.ranges[p];
+            let f1 = end(rd, p).0;
+            let shift = (bases[k] - bases[k0]) as u64;
+            for f in &mut rd.chunk.features[f0..f1] {
+                f.seq = f.seq - f0 as u64 + shift;
+            }
+        }
+    });
+
+    for k in 0..ranges.len() {
+        let Some((j, p)) = at[k] else {
+            continue;
+        };
+        let (m0, m1) = (reads[j].ranges[p].2, end(&reads[j], p).1);
+        print_messages(
+            stderr,
+            reading_name,
+            &reads[j].chunk.messages[m0..m1],
+            0,
+            once,
+        );
+        if p + 1 == reads[j].ranges.len() && reads[j].result.is_err() {
+            flush(stderr);
+            return std::mem::replace(&mut reads[j].result, Ok(()));
+        }
+    }
+
+    for mut rd in reads {
+        let Some(&(k0, _, _)) = rd.ranges.first() else {
+            continue;
+        };
+        let s = rd.segment;
+        for t in &rd.chunk.dist_terms {
+            numbering.seg_dist[s] += t;
+        }
+        for t in &rd.chunk.area_terms {
+            numbering.seg_area[s] += t;
+        }
+        parts.dist_count += rd.chunk.dist_count;
+        rd.chunk.dist_terms = Buf::new();
+        rd.chunk.area_terms = Buf::new();
+        parts.seq_base.push(bases[k0]);
+        parts.segment.push(s as u16);
+        parts.take_stats(&mut rd.chunk, max_samples);
         parts.chunks.push(Accepted {
-            chunk,
+            chunk: rd.chunk,
             unit: usize::MAX,
             line_offset: 0,
         });
     }
-    flush(stderr);
+    crate::buf::relieve();
     Ok(())
 }
 
@@ -990,7 +1151,7 @@ fn read_arrow(
     let batch = numbering.batch();
     // Rows read in parallel at a time: whole batches, so that each window's
     // ranges are those of the whole table, up to about 256k rows or 256 MB.
-    let window = batch * (1usize << 18).div_ceil(batch);
+    let window = batch * WINDOW_ROWS.div_ceil(batch);
     const WINDOW_BYTES: usize = 256 << 20;
 
     let mut batches = batches;
@@ -1048,48 +1209,34 @@ fn read_arrow_window(
         starts.push(starts.last().unwrap() + b.num_rows());
     }
     let ranges = numbering.ranges(n);
-
-    let chunks: Vec<(Chunk, crate::Result<()>)> = ranges
-        .par_iter()
-        .map(|&(a, b, _)| {
-            let mut chunk = Chunk::new(r.layer_names);
-            let mut result = Ok(());
+    read_batched(
+        parts,
+        &ranges,
+        numbering,
+        r.layer_names,
+        r.cfg.o.max_tilestats_sample_values,
+        r.reading_name,
+        once,
+        stderr,
+        |chunk, a, b| {
             let mut k = starts.partition_point(|&s| s <= a).saturating_sub(1);
             for row in a..b {
                 while row >= starts[k + 1] {
                     k += 1;
                 }
-                result = arrow::read_row(
-                    &mut chunk,
+                arrow::read_row(
+                    chunk,
                     r.cfg,
                     r.table,
                     &resolved[k],
                     row - starts[k],
                     r.reading_name,
                     r.layername,
-                );
-                if result.is_err() {
-                    break;
-                }
+                )?;
             }
-            (chunk, result)
-        })
-        .collect();
-
-    numbering.number(parts, &ranges, chunks.iter().map(|(c, _)| c));
-    for (chunk, result) in chunks {
-        print_messages(stderr, r.reading_name, &chunk.messages, 0, once);
-        if let Err(e) = result {
-            flush(stderr);
-            return Err(e);
-        }
-        parts.chunks.push(Accepted {
-            chunk,
-            unit: usize::MAX,
-            line_offset: 0,
-        });
-    }
-    Ok(())
+            Ok(())
+        },
+    )
 }
 
 /// Reads a Geobuf file, numbering its features in the batches and ranges that
@@ -1153,6 +1300,7 @@ fn read_geobuf(
                     r
                 }
             };
+            chunk.finish();
             (chunk, r)
         })
         .collect();
@@ -1402,6 +1550,17 @@ fn merge(
             m.push(id);
         }
         layer_remap.push(m);
+    }
+    for (name, taken) in std::mem::take(&mut parts.stats) {
+        let into = &mut stats[layer_ids[&name] as usize];
+        for (k, st) in taken {
+            match into.get_mut(&k) {
+                Some(have) => have.merge(st, max_samples),
+                None => {
+                    into.insert(k, st);
+                }
+            }
+        }
     }
     for (l, st) in layers.iter_mut().zip(stats) {
         l.entry.tilestats = st.into_iter().map(|(k, v)| (k, v.to_tilestat())).collect();

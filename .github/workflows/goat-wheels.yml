@@ -26,7 +26,19 @@ jobs:
             docker: -e JEMALLOC_SYS_WITH_LG_PAGE=16
     steps:
       - uses: actions/checkout@v7
+      # the action downloads maturin from GitHub's releases, which can time out (504): retry once
       - uses: PyO3/maturin-action@v1
+        id: build
+        continue-on-error: true
+        with:
+          target: ${{ matrix.target }}
+          manylinux: '2_28'
+          docker-options: -e LIBZ_SYS_STATIC=1 ${{ matrix.docker }}
+          rust-toolchain: 1.98.1
+          maturin-version: v1.16.0
+          args: --release --locked --out dist
+      - uses: PyO3/maturin-action@v1
+        if: steps.build.outcome == 'failure'
         with:
           target: ${{ matrix.target }}
           manylinux: '2_28'

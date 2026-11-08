@@ -17,7 +17,7 @@ use wagyu::{
 
 use crate::attribute::{AttributeOp, preserve_attribute_mvt};
 use crate::errors::{EXIT_FAILURE, EXIT_IMPOSSIBLE, EXIT_MVT, EXIT_PROTOBUF};
-use crate::evaluator::evaluate_feature;
+use crate::evaluator::{FilterGeometry, evaluate_feature_geom};
 use crate::geometry::{
     ClipBbox, Draw, DrawVec, InputTile, SourceTile, VT_CLOSEPATH, VT_LINE, VT_LINETO, VT_MOVETO,
     VT_POINT, VT_POLYGON, bitfield40,
@@ -2087,14 +2087,21 @@ pub fn overzoom_source_tiles(
                 }
 
                 let mut exclude_attributes: BTreeSet<String> = BTreeSet::new();
+                // the geometry, clipped to the output tile, back in world coordinates
+                let filter_geom = FilterGeometry {
+                    draws: &geom,
+                    origin: (nx as i64 * outtilesize, ny as i64 * outtilesize),
+                    type_: t,
+                };
                 if let Some(filter) = filter
-                    && !evaluate_feature(
+                    && !evaluate_feature_geom(
                         &feature,
                         layer,
                         filter,
                         &mut exclude_attributes,
                         nz,
                         unidecode_data,
+                        Some(&filter_geom),
                     )
                 {
                     // filtered away

@@ -1574,9 +1574,7 @@ pub fn make_tile(octx: &Ctx<'_>, ort: &ReadTile, mp: &MakeParams) -> MakeResult 
 
         let trace_loop = trace_start.elapsed().as_secs_f64();
         if first_time {
-            // a feature pending beyond the next zoom forces the children on; one that
-            // appears at the next zoom lets them try to stop there
-            res.children_must_go_on = dropping_by_rate || rt.minzoom_feature_pending_beyond_next;
+            res.children_must_go_on = dropping_by_rate || rt.minzoom_feature_pending;
             first_time = false;
         }
         let mut adjusted_max_tile_size = max_tile_size;

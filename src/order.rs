@@ -401,6 +401,13 @@ fn order1(store: &mut FeatureStore, o: &Options, out: &mut Out) -> crate::Result
             // that is, maxzoom - 1 > 32 - low_detail
             maxzoom = 33 - low_detail;
         }
+        if maxzoom > o.maximum_maxzoom {
+            out.note(format!(
+                "Using largest maxzoom guess of -z{}\n",
+                o.maximum_maxzoom
+            ));
+            maxzoom = o.maximum_maxzoom;
+        }
 
         let mut total_tile_count: f64 = 0.0;
         for i in 1..=maxzoom {

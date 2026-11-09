@@ -150,9 +150,11 @@ pub struct Options {
 
     pub maxzoom: i32,
     pub minzoom: i32,
-    /// `-zg` or `--smallest-maximum-zoom-guess`
+    /// `-zg`, `--smallest-maximum-zoom-guess` or `--largest-maximum-zoom-guess`
     pub guess_maxzoom: bool,
     pub minimum_maxzoom: i32,
+    /// `--largest-maximum-zoom-guess`: the most `-zg` may choose
+    pub maximum_maxzoom: i32,
     pub basezoom: i32,
     pub basezoom_marker_width: f64,
     pub droprate: f64,
@@ -266,6 +268,7 @@ impl Default for Options {
             minzoom: 0,
             guess_maxzoom: false,
             minimum_maxzoom: 0,
+            maximum_maxzoom: MAX_ZOOM,
             basezoom: -1,
             basezoom_marker_width: 1.0,
             droprate: 2.5,
@@ -461,6 +464,16 @@ impl Options {
             return Err(Error::new(
                 EXIT_ARGS,
                 "Can't use -rp without either -zg or --smallest-maximum-zoom-guess",
+            ));
+        }
+
+        if self.minimum_maxzoom > self.maximum_maxzoom {
+            return Err(Error::new(
+                EXIT_ARGS,
+                format!(
+                    "--smallest-maximum-zoom-guess ({}) is larger than --largest-maximum-zoom-guess ({})",
+                    self.minimum_maxzoom, self.maximum_maxzoom
+                ),
             ));
         }
 
@@ -1063,6 +1076,7 @@ fn long_options_orig() -> Vec<LongOption> {
         opt("maximum-zoom", REQ, b'z'),
         opt("minimum-zoom", REQ, b'Z'),
         opt("smallest-maximum-zoom-guess", REQ, b'~'),
+        opt("largest-maximum-zoom-guess", REQ, b'~'),
         add("extend-zooms-if-still-dropping", A_EXTEND_ZOOMS),
         opt("extend-zooms-if-still-dropping-maximum", REQ, b'~'),
         add(
@@ -1344,6 +1358,17 @@ pub fn parse_args(argv: &[String]) -> crate::Result<Options> {
                         if o.minimum_maxzoom > MAX_ZOOM {
                             return err_args(format!(
                                 "{}: {}: minimum maxzoom can be at most {}",
+                                argv0, arg, MAX_ZOOM
+                            ));
+                        }
+                    }
+                    "largest-maximum-zoom-guess" => {
+                        o.maxzoom = MAX_ZOOM;
+                        o.guess_maxzoom = true;
+                        o.maximum_maxzoom = require_int(&optarg, "Largest maxzoom guess", &argv0)?;
+                        if !(0..=MAX_ZOOM).contains(&o.maximum_maxzoom) {
+                            return err_args(format!(
+                                "{}: {}: largest maxzoom guess must be from 0 to {}",
                                 argv0, arg, MAX_ZOOM
                             ));
                         }
@@ -1892,6 +1917,26 @@ mod tests {
         assert_eq!(o.full_detail, 12);
         assert_eq!(o.basezoom, 12);
         assert_eq!(o.geometry_scale, 32 - (12 + 12));
+    }
+
+    #[test]
+    fn largest_maximum_zoom_guess() {
+        let o = parse_args(&args(
+            "tippecanoe -o x.pmtiles --largest-maximum-zoom-guess=14 a",
+        ))
+        .unwrap();
+        assert!(o.guess_maxzoom);
+        assert_eq!(o.maximum_maxzoom, 14);
+
+        let o = parse_args(&args("tippecanoe -o x.pmtiles -zg a")).unwrap();
+        assert_eq!(o.maximum_maxzoom, MAX_ZOOM);
+
+        let mut o = parse_args(&args(
+            "tippecanoe -o x.pmtiles --smallest-maximum-zoom-guess=10 --largest-maximum-zoom-guess=8 a",
+        ))
+        .unwrap();
+        o.tippecanoe_cpus = 1;
+        assert_eq!(o.resolve().unwrap_err().exit_code, EXIT_ARGS);
     }
 
     #[test]
